@@ -72,9 +72,10 @@ const uint8_t seg_digits[10] = {
 	    0b01101111  // 9
 };
 
-uint32_t IC_Val1 = 0, IC_Val2 = 0;
-uint8_t Is_First_Captured = 0;
-uint32_t Distance = 0;
+uint32_t echo_start_time = 0;
+uint32_t echo_end_time  = 0;
+uint8_t waiting_for_falling_edge = 0;
+uint32_t distance_cm = 0;
 
 #define TRIG_PIN        GPIO_PIN_10
 #define TRIG_PORT       GPIOA
@@ -82,12 +83,10 @@ uint32_t Distance = 0;
 #define LED_RED_PORT    GPIOA
 #define LED_GREEN_PIN   GPIO_PIN_9
 #define LED_GREEN_PORT  GPIOA
-uint8_t led_state_red = 0;
-uint8_t led_state_green = 0;
-#define MOVING_AVG_SIZE 5
-uint32_t distance_buffer[MOVING_AVG_SIZE] = {0};
-uint8_t buffer_index = 0;
-uint32_t GetDistanceAverage(uint32_t new_distance);
+#define DISTANCE_FILTER_SIZE 5
+uint32_t distance_history[DISTANCE_FILTER_SIZE] = {0};
+uint8_t distance_history_index = 0;
+uint32_t calculate_average_distance(uint32_t new_distance);
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -98,13 +97,15 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 void DisplayDigit(uint8_t digit, uint8_t position) {
-
-
     HAL_GPIO_WritePin(DIG1_GPIO_Port, DIG1_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(DIG2_GPIO_Port, DIG2_Pin, GPIO_PIN_SET);
 
-    if (position == 0) HAL_GPIO_WritePin(DIG1_GPIO_Port, DIG1_Pin, GPIO_PIN_RESET);
-    else               HAL_GPIO_WritePin(DIG2_GPIO_Port, DIG2_Pin, GPIO_PIN_RESET);
+    if (position == 0){
+    	HAL_GPIO_WritePin(DIG1_GPIO_Port, DIG1_Pin, GPIO_PIN_RESET);
+    }
+    else{
+    	HAL_GPIO_WritePin(DIG2_GPIO_Port, DIG2_Pin, GPIO_PIN_RESET);
+    }
 
     HAL_GPIO_WritePin(SEG_A_PORT, SEG_A_PIN, (seg_digits[digit] & 0b0000001) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     HAL_GPIO_WritePin(SEG_B_PORT, SEG_B_PIN, (seg_digits[digit] & 0b0000010) ? GPIO_PIN_SET : GPIO_PIN_RESET);
@@ -124,7 +125,7 @@ void delay_us(uint16_t us)
 void HCSR04_Read(void)
 {
     HAL_GPIO_WritePin(TRIG_PORT, TRIG_PIN, GPIO_PIN_SET);
-    delay_us(10); // <<< 10 µs pulse
+    delay_us(10);
     HAL_GPIO_WritePin(TRIG_PORT, TRIG_PIN, GPIO_PIN_RESET);
 }
 
@@ -230,16 +231,33 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-    if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
-        if (Is_First_Captured == 0) {
-            IC_Val1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-            Is_First_Captured = 1;
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)
+    {
+        if (waiting_for_falling_edge == 0)
+        {
+            echo_start_time = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+            waiting_for_falling_edge = 1;
+
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim,TIM_CHANNEL_1,TIM_INPUTCHANNELPOLARITY_FALLING);
         } else {
-            IC_Val2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-            uint32_t diff = (IC_Val2 >= IC_Val1) ? (IC_Val2 - IC_Val1) : ((0xFFFF - IC_Val1) + IC_Val2);
-            Distance = diff * 0.0343 / 2;
-            Is_First_Captured = 0;
+            echo_end_time = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim,TIM_CHANNEL_1,TIM_INPUTCHANNELPOLARITY_RISING);
+
+            uint32_t pulse_width;
+
+            if (echo_end_time >= echo_start_time)
+            {
+                pulse_width = echo_end_time - echo_start_time;
+            } else {
+                pulse_width = (0xFFFF - echo_start_time + 1) + echo_end_time;
+            }
+
+            distance_cm = pulse_width / 58;
+
+            waiting_for_falling_edge = 0;
         }
     }
 }
@@ -248,7 +266,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     static uint8_t current_digit = 0;
 
     if (htim->Instance == TIM4) {
-    	uint32_t avg_distance = GetDistanceAverage(Distance);
+    	uint32_t avg_distance = calculate_average_distance(distance_cm);
     	uint8_t tens = (avg_distance / 10) % 10;
     	uint8_t ones = avg_distance % 10;
 
@@ -262,7 +280,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     }
 
     if (htim->Instance == TIM3) {
-        if (Distance < 20) {
+        if (distance_cm < 10) {
             HAL_GPIO_TogglePin(LED_RED_PORT, LED_RED_PIN);
             HAL_GPIO_WritePin(LED_GREEN_PORT, LED_GREEN_PIN, GPIO_PIN_RESET);
         } else {
@@ -272,15 +290,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     }
 }
 
-uint32_t GetDistanceAverage(uint32_t new_distance) {
-    distance_buffer[buffer_index] = new_distance;  // pohrani novo mjerenje
-    buffer_index = (buffer_index + 1) % MOVING_AVG_SIZE;
+uint32_t calculate_average_distance(uint32_t new_distance) {
+    distance_history[distance_history_index] = new_distance;
+    distance_history_index = (distance_history_index + 1) % DISTANCE_FILTER_SIZE;
 
     uint32_t sum = 0;
-    for (uint8_t i = 0; i < MOVING_AVG_SIZE; i++) {
-        sum += distance_buffer[i];
+    for (uint8_t i = 0; i < DISTANCE_FILTER_SIZE; i++) {
+        sum += distance_history[i];
     }
-    return sum / MOVING_AVG_SIZE;
+    return sum / DISTANCE_FILTER_SIZE;
 }
 /* USER CODE END 4 */
 
