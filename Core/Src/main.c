@@ -59,6 +59,14 @@
 #define SEG_G_PIN      GPIO_PIN_6
 #define SEG_G_PORT     GPIOB
 
+#define TRIG_PIN        GPIO_PIN_10
+#define TRIG_PORT       GPIOA
+#define LED_RED_PIN     GPIO_PIN_8
+#define LED_RED_PORT    GPIOA
+#define LED_GREEN_PIN   GPIO_PIN_9
+#define LED_GREEN_PORT  GPIOA
+#define DISTANCE_FILTER_SIZE 5
+
 const uint8_t seg_digits[10] = {
 	    0b00111111, // 0
 	    0b00000110, // 1
@@ -77,13 +85,7 @@ uint32_t echo_end_time  = 0;
 uint8_t waiting_for_falling_edge = 0;
 uint32_t distance_cm = 0;
 
-#define TRIG_PIN        GPIO_PIN_10
-#define TRIG_PORT       GPIOA
-#define LED_RED_PIN     GPIO_PIN_8
-#define LED_RED_PORT    GPIOA
-#define LED_GREEN_PIN   GPIO_PIN_9
-#define LED_GREEN_PORT  GPIOA
-#define DISTANCE_FILTER_SIZE 5
+
 uint32_t distance_history[DISTANCE_FILTER_SIZE] = {0};
 uint8_t distance_history_index = 0;
 uint32_t calculate_average_distance(uint32_t new_distance);
@@ -166,8 +168,6 @@ int main(void)
     HAL_TIM_Base_Start_IT(&htim3);
     HAL_TIM_Base_Start(&htim1);
     HAL_TIM_Base_Start_IT(&htim4);
-    HAL_GPIO_WritePin(DIG1_GPIO_Port, DIG1_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(SEG_A_PORT, SEG_A_PIN, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
   /* Infinite loop */
